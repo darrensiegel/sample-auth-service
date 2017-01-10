@@ -1,73 +1,111 @@
 'use strict';
 
 var amqp = require('amqplib/callback_api');
-
 var mysql = require("mysql");
 
-// First you need to create a connection to the db
-var con = mysql.createConnection({
-  host: "mysql",
-  user: "root",
-  password: "password",
-  database: "authorization"
-});
 
-con.connect(function(err){
-  if(err){
-    console.log('Error connecting to Db');
-    return;
-  }
-  console.log('Connection established');
+// Application entry point
+var init = function() {
 
-});
+  // Stand up the database connection, then the message broker
+  initDatabase()
+    .then(conn => initBroker(onMessage.bind(undefined, conn)))
+    .then(result => console.log("auth-service up and running"))
+    .catch(err => console.log(err));
+}
 
-var hasAuthorization = function(authRequest) {
+// Message handler for messages received from the broker
+var onMessage = function(conn, msg, reply) {
+
+  let authRequest = msg;
+
+  hasAuthorization(conn, authRequest)
+    .then(result => {
+      reply({ hasAuthorization: result });
+    })
+    .catch(err => console.log(err));
+}
+
+// Initialize the database connection
+var initDatabase = function() {
+
+  let con = mysql.createConnection({
+    host: "mysql",
+    user: "root",
+    password: "password",
+    database: "authorization"
+  });
+
+  return new Promise(function(resolve, reject) {
+    con.connect(function(err){
+      if (err) {
+        reject(err);
+      } else {
+        resolve(con);
+      }
+    });
+  });
+}
+
+// Performs the authorization check
+var hasAuthorization = function(con, authRequest) {
 
   var { actor, action, item } = authRequest;
-
-  console.log(actor);
-  console.log(action);
-  console.log(item);
 
   return new Promise(function(resolve, reject) {
     con.query("SELECT Count(*) as recordCount FROM authorization WHERE actor_id = ? and action_id = ? and item_id = ?",
       [actor, action, item], function(err,rows){
-        if(err) {
-            reject(err);
-            return;
+        if (err) {
+          reject(err);
+        } else {
+          resolve(rows[0].recordCount === 1 ? true : false);
         }
-        resolve(rows[0].recordCount === 1 ? true : false);
       });
     });
 }
 
-amqp.connect('amqp://my-rabbit', function(err, conn) {
-  conn.createChannel(function(err, ch) {
-    var q = 'auth-rpc-queue';
+// Initialize the broker, giving it the message handler that we
+// want to use
+var initBroker = function(onMessage) {
 
-    ch.assertQueue(q, {durable: false});
-    ch.prefetch(1);
-    console.log(' [x] Awaiting RPC requests');
-    ch.consume(q, function reply(msg) {
+  return new Promise(function(resolve, reject) {
 
-      var authRequest = JSON.parse(msg.content.toString());
+    amqp.connect('amqp://my-rabbit', function(err, conn) {
 
-      console.log(authRequest);
+      if (err) {
+        reject(err);
+        return;
+      }
 
-      hasAuthorization(authRequest)
-        .then(result => {
+      conn.createChannel(function(err, ch) {
 
-          let reply = { hasAuthorization: result };
+        if (err) {
+          reject(err);
+          return;
+        }
 
-          ch.sendToQueue(msg.properties.replyTo,
-            new Buffer(JSON.stringify(reply)),
-            {correlationId: msg.properties.correlationId});
+        var q = 'auth-rpc-queue';
 
-          ch.ack(msg);
-        })
-        .catch(err => console.log(err));
+        ch.assertQueue(q, {durable: false});
+        ch.prefetch(1);
+        ch.consume(q, msg => {
 
+          var reply = (replyMessage => {
+            ch.sendToQueue(msg.properties.replyTo,
+              new Buffer(JSON.stringify(replyMessage)),
+              {correlationId: msg.properties.correlationId});
 
+            ch.ack(msg);
+          });
+
+          onMessage(JSON.parse(msg.content.toString()), reply)
+        });
+
+        resolve(true);
+      });
     });
   });
-});
+
+}
+
+init();
