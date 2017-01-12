@@ -3,27 +3,36 @@
 var amqp = require('amqplib/callback_api');
 var mysql = require("mysql");
 
-
 // Application entry point
 var init = function() {
 
+  var messageHandlers = {
+    hasAuthorization,
+    getActors,
+    getItems,
+    getActions
+  };
+
   // Stand up the database connection, then the message broker
   initDatabase()
-    .then(conn => initBroker(onMessage.bind(undefined, conn)))
+    .then(conn => initBroker(dispatcher.bind(undefined, messageHandlers, conn)))
     .then(result => console.log("auth-service up and running"))
     .catch(err => console.log(err));
 }
 
 // Message handler for messages received from the broker
-var onMessage = function(conn, msg, reply) {
+var dispatcher = function(handlers, conn, msg, reply) {
 
-  let authRequest = msg;
+  let handler = handlers[msg.type];
 
-  hasAuthorization(conn, authRequest)
-    .then(result => {
-      reply({ hasAuthorization: result });
-    })
-    .catch(err => console.log(err));
+  if (handler !== undefined) {
+    handler(conn, msg)
+      .then(result => reply(result))
+      .catch(err => console.log(err));
+  } else {
+    console.log("Unknown message type: " + msg.type);
+  }
+
 }
 
 // Initialize the database connection
@@ -58,11 +67,30 @@ var hasAuthorization = function(con, authRequest) {
         if (err) {
           reject(err);
         } else {
-          resolve(rows[0].recordCount === 1 ? true : false);
+          resolve({ hasAuthorization: (rows[0].recordCount === 1 ? true : false)});
         }
       });
     });
 }
+
+var getAllFromTable = function(table, con) {
+
+  return new Promise(function(resolve, reject) {
+    con.query("SELECT * FROM " + table + " ORDER BY name",
+      function(err,rows){
+        if (err) {
+          reject(err);
+        } else {
+          resolve({rows});
+        }
+      });
+    });
+}
+
+var getActors = getAllFromTable.bind(undefined, "actor");
+var getActions = getAllFromTable.bind(undefined, "action");
+var getItems = getAllFromTable.bind(undefined, "item");
+
 
 // Initialize the broker, giving it the message handler that we
 // want to use
