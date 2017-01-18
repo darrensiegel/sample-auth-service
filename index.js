@@ -36,7 +36,7 @@ var dispatcher = function(handlers, conn, msg, reply) {
 }
 
 // Initialize the database connection
-var initDatabase = function() {
+var initDatabase = function(initialResolve) {
 
   let con = mysql.createConnection({
     host: "mysql",
@@ -48,9 +48,15 @@ var initDatabase = function() {
   return new Promise(function(resolve, reject) {
     con.connect(function(err){
       if (err) {
-        reject(err);
+
+        setTimeout(() => initDatabase(initialResolve === undefined ? resolve : initialResolve), 100);
+
       } else {
-        resolve(con);
+        if (initialResolve !== undefined) {
+          initialResolve(con);
+        } else {
+          resolve(con);
+        }
       }
     });
   });
@@ -94,14 +100,14 @@ var getItems = getAllFromTable.bind(undefined, "item");
 
 // Initialize the broker, giving it the message handler that we
 // want to use
-var initBroker = function(onMessage) {
+var initBroker = function(onMessage, initialResolve) {
 
   return new Promise(function(resolve, reject) {
 
-    amqp.connect('amqp://my-rabbit', function(err, conn) {
+    amqp.connect('amqp://broker', function(err, conn) {
 
       if (err) {
-        reject(err);
+        setTimeout(() => initBroker(onMessage, initialResolve === undefined ? resolve : initialResolve), 100);
         return;
       }
 
@@ -129,7 +135,11 @@ var initBroker = function(onMessage) {
           onMessage(JSON.parse(msg.content.toString()), reply)
         });
 
-        resolve(true);
+        if (initialResolve !== undefined) {
+          initialResolve(true);
+        } else {
+          resolve(true);
+        }
       });
     });
   });
